@@ -2,8 +2,16 @@ const debug = require('ghost-ignition').debug('api:v2:utils:permissions');
 const Promise = require('bluebird');
 const _ = require('lodash');
 const permissions = require('../../../services/permissions');
-const common = require('../../../lib/common');
+const {i18n} = require('../../../lib/common');
+const errors = require('@tryghost/errors');
 
+/**
+ * @description Handle requests, which need authentication.
+ *
+ * @param {Object} apiConfig - Docname & method of API ctrl
+ * @param {Object} frame
+ * @return {Promise}
+ */
 const nonePublicAuth = (apiConfig, frame) => {
     debug('check admin permissions');
 
@@ -11,11 +19,20 @@ const nonePublicAuth = (apiConfig, frame) => {
 
     let permissionIdentifier = frame.options.id;
 
+    // CASE: Target ctrl can override the identifier. The identifier is the unique identifier of the target resource
+    //       e.g. edit a setting -> the key of the setting
+    //       e.g. edit a post -> post id from url param
+    //       e.g. change user password -> user id inside of the body structure
     if (apiConfig.identifier) {
         permissionIdentifier = apiConfig.identifier(frame);
     }
 
-    const unsafeAttrObject = apiConfig.unsafeAttrs && _.has(frame, `data.[${apiConfig.docName}][0]`) ? _.pick(frame.data[apiConfig.docName][0], apiConfig.unsafeAttrs) : {};
+    let unsafeAttrObject = apiConfig.unsafeAttrs && _.has(frame, `data.[${apiConfig.docName}][0]`) ? _.pick(frame.data[apiConfig.docName][0], apiConfig.unsafeAttrs) : {};
+
+    if (apiConfig.unsafeAttrsObject) {
+        unsafeAttrObject = apiConfig.unsafeAttrsObject(frame);
+    }
+
     const permsPromise = permissions.canThis(frame.options.context)[apiConfig.method][singular](permissionIdentifier, unsafeAttrObject);
 
     return permsPromise.then((result) => {
@@ -33,36 +50,45 @@ const nonePublicAuth = (apiConfig, frame) => {
             frame.data[apiConfig.docName][0] = _.omit(frame.data[apiConfig.docName][0], result.excludedAttrs);
         }
     }).catch((err) => {
-        if (err instanceof common.errors.NoPermissionError) {
-            err.message = common.i18n.t('errors.api.utils.noPermissionToCall', {
+        if (err instanceof errors.NoPermissionError) {
+            err.message = i18n.t('errors.api.utils.noPermissionToCall', {
                 method: apiConfig.method,
                 docName: apiConfig.docName
             });
             return Promise.reject(err);
         }
 
-        if (common.errors.utils.isIgnitionError(err)) {
+        if (errors.utils.isIgnitionError(err)) {
             return Promise.reject(err);
         }
 
-        return Promise.reject(new common.errors.GhostError({
+        return Promise.reject(new errors.GhostError({
             err: err
         }));
     });
 };
 
+// @TODO: https://github.com/TryGhost/Ghost/issues/10735
 module.exports = {
+    /**
+     * @description Handle permission stage for API version v2.
+     *
+     * @param {Object} apiConfig - Docname & method of target ctrl.
+     * @param {Object} frame
+     * @return {Promise}
+     */
     handle(apiConfig, frame) {
         debug('handle');
 
+        // @TODO: https://github.com/TryGhost/Ghost/issues/10099
         frame.options.context = permissions.parseContext(frame.options.context);
 
+        // CASE: Content API access
         if (frame.options.context.public) {
             debug('check content permissions');
 
-            // @TODO: The permission layer relies on the API format from v0.1. The permission layer should define
-            //        it's own format and should not re-use or rely on the API format. For now we have to simulate the v0.1
-            //        structure. We should raise an issue asap.
+            // @TODO: Remove when we drop v0.1
+            // @TODO: https://github.com/TryGhost/Ghost/issues/10733
             return permissions.applyPublicRules(apiConfig.docName, apiConfig.method, {
                 status: frame.options.status,
                 id: frame.options.id,

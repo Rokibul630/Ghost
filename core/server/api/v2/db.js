@@ -1,8 +1,8 @@
 const Promise = require('bluebird');
-const backupDatabase = require('../../data/db/backup');
+const dbBackup = require('../../data/db/backup');
 const exporter = require('../../data/exporter');
 const importer = require('../../data/importer');
-const common = require('../../lib/common');
+const errors = require('@tryghost/errors');
 const models = require('../../models');
 
 module.exports = {
@@ -25,7 +25,7 @@ module.exports = {
             // NOTE: we need to have `include` property available as backupDatabase uses it internally
             Object.assign(frame.options, {include: frame.options.withRelated});
 
-            return backupDatabase(frame.options);
+            return dbBackup.backup(frame.options);
         }
     },
 
@@ -46,14 +46,12 @@ module.exports = {
                 value: () => (exporter.fileName())
             }
         },
-        permissions: {
-            method: 'exportContent'
-        },
+        permissions: true,
         query(frame) {
             return Promise.resolve()
                 .then(() => exporter.doExport({include: frame.options.withRelated}))
                 .catch((err) => {
-                    return Promise.reject(new common.errors.GhostError({err: err}));
+                    return Promise.reject(new errors.GhostError({err: err}));
                 });
         }
     },
@@ -69,9 +67,7 @@ module.exports = {
                 }
             }
         },
-        permissions: {
-            method: 'importContent'
-        },
+        permissions: true,
         query(frame) {
             return importer.importFromFile(frame.file, {include: frame.options.withRelated});
         }
@@ -79,9 +75,7 @@ module.exports = {
 
     deleteAllContent: {
         statusCode: 204,
-        permissions: {
-            method: 'deleteAllContent'
-        },
+        permissions: true,
         query() {
             /**
              * @NOTE:
@@ -113,14 +107,14 @@ module.exports = {
                             }, {concurrency: 100});
                         })
                         .catch((err) => {
-                            throw new common.errors.GhostError({
+                            throw new errors.GhostError({
                                 err: err
                             });
                         });
                 });
             }
 
-            return backupDatabase().then(deleteContent);
+            return dbBackup.backup().then(deleteContent);
         }
     }
 };

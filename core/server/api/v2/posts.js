@@ -1,8 +1,9 @@
 const models = require('../../models');
-const common = require('../../lib/common');
-const urlService = require('../../services/url');
-const allowedIncludes = ['author', 'tags', 'authors', 'authors.roles'];
-const unsafeAttrs = ['author_id', 'status', 'authors'];
+const {i18n} = require('../../lib/common');
+const errors = require('@tryghost/errors');
+const urlUtils = require('../../../shared/url-utils');
+const allowedIncludes = ['tags', 'authors', 'authors.roles'];
+const unsafeAttrs = ['status', 'authors', 'visibility'];
 
 module.exports = {
     docName: 'posts',
@@ -12,7 +13,6 @@ module.exports = {
             'filter',
             'fields',
             'formats',
-            'status',
             'limit',
             'order',
             'page',
@@ -41,15 +41,16 @@ module.exports = {
         options: [
             'include',
             'fields',
-            'status',
             'formats',
             'debug',
-            'absolute_urls'
+            'absolute_urls',
+            // NOTE: only for internal context
+            'forUpdate',
+            'transacting'
         ],
         data: [
             'id',
             'slug',
-            'status',
             'uuid'
         ],
         validation: {
@@ -69,8 +70,8 @@ module.exports = {
             return models.Post.findOne(frame.data, frame.options)
                 .then((model) => {
                     if (!model) {
-                        throw new common.errors.NotFoundError({
-                            message: common.i18n.t('errors.api.posts.postNotFound')
+                        throw new errors.NotFoundError({
+                            message: i18n.t('errors.api.posts.postNotFound')
                         });
                     }
 
@@ -83,12 +84,16 @@ module.exports = {
         statusCode: 201,
         headers: {},
         options: [
-            'include'
+            'include',
+            'source'
         ],
         validation: {
             options: {
                 include: {
                     values: allowedIncludes
+                },
+                source: {
+                    values: ['html']
                 }
             }
         },
@@ -113,7 +118,11 @@ module.exports = {
         headers: {},
         options: [
             'include',
-            'id'
+            'id',
+            'source',
+            // NOTE: only for internal context
+            'forUpdate',
+            'transacting'
         ],
         validation: {
             options: {
@@ -122,6 +131,9 @@ module.exports = {
                 },
                 id: {
                     required: true
+                },
+                source: {
+                    values: ['html']
                 }
             }
         },
@@ -131,13 +143,18 @@ module.exports = {
         query(frame) {
             return models.Post.edit(frame.data.posts[0], frame.options)
                 .then((model) => {
-                    if (model.get('status') === 'published' ||
-                        model.get('status') === 'draft' && model.previous('status') === 'published') {
+                    if (
+                        model.get('status') === 'published' && model.wasChanged() ||
+                        model.get('status') === 'draft' && model.previous('status') === 'published'
+                    ) {
                         this.headers.cacheInvalidate = true;
-                    } else if (model.get('status') === 'draft' && model.previous('status') !== 'published') {
+                    } else if (
+                        model.get('status') === 'draft' && model.previous('status') !== 'published' ||
+                        model.get('status') === 'scheduled' && model.wasChanged()
+                    ) {
                         this.headers.cacheInvalidate = {
-                            value: urlService.utils.urlFor({
-                                relativeUrl: urlService.utils.urlJoin('/p', model.get('uuid'), '/')
+                            value: urlUtils.urlFor({
+                                relativeUrl: urlUtils.urlJoin('/p', model.get('uuid'), '/')
                             })
                         };
                     } else {
@@ -175,11 +192,11 @@ module.exports = {
             frame.options.require = true;
 
             return models.Post.destroy(frame.options)
-                .return(null)
+                .then(() => null)
                 .catch(models.Post.NotFoundError, () => {
-                    throw new common.errors.NotFoundError({
-                        message: common.i18n.t('errors.api.posts.postNotFound')
-                    });
+                    return Promise.reject(new errors.NotFoundError({
+                        message: i18n.t('errors.api.posts.postNotFound')
+                    }));
                 });
         }
     }

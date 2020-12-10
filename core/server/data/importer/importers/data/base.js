@@ -1,10 +1,10 @@
-const debug = require('ghost-ignition').debug('importer:base'),
-    _ = require('lodash'),
-    Promise = require('bluebird'),
-    ObjectId = require('bson-objectid'),
-    common = require('../../../../lib/common'),
-    sequence = require('../../../../lib/promise/sequence'),
-    models = require('../../../../models');
+const debug = require('ghost-ignition').debug('importer:base');
+const _ = require('lodash');
+const Promise = require('bluebird');
+const ObjectId = require('bson-objectid');
+const errors = require('@tryghost/errors');
+const {sequence} = require('@tryghost/promise');
+const models = require('../../../../models');
 
 class Base {
     constructor(allDataFromFile, options) {
@@ -21,6 +21,7 @@ class Base {
 
         this.dataKeyToImport = options.dataKeyToImport;
         this.dataToImport = _.cloneDeep(allDataFromFile[this.dataKeyToImport] || []);
+        this.originalIdMap = {};
 
         this.importedDataToReturn = [];
         this.importedData = [];
@@ -53,7 +54,7 @@ class Base {
     }
 
     /**
-     * Never ever import these attributes!
+     * Strips attributes of the object
      */
     stripProperties(properties) {
         _.each(this.dataToImport, (obj) => {
@@ -86,7 +87,13 @@ class Base {
 
     generateIdentifier() {
         _.each(this.dataToImport, (obj) => {
-            obj.id = ObjectId.generate();
+            const newId = ObjectId.generate();
+
+            if (obj.id) {
+                this.originalIdMap[newId] = obj.id;
+            }
+
+            obj.id = newId;
         });
     }
 
@@ -95,14 +102,14 @@ class Base {
     }
 
     beforeImport() {
-        this.stripProperties(['id']);
         this.sanitizeValues();
         this.generateIdentifier();
         return Promise.resolve();
     }
 
     handleError(errs, obj) {
-        let errorsToReject = [], problems = [];
+        let errorsToReject = [];
+        let problems = [];
 
         // CASE: validation errors, see models/base/events.js onValidate
         if (!_.isArray(errs)) {
@@ -121,14 +128,14 @@ class Base {
                         });
                     }
                 } else {
-                    errorsToReject.push(new common.errors.DataImportError({
+                    errorsToReject.push(new errors.DataImportError({
                         message: 'Detected duplicated entry.',
                         help: this.modelName,
                         context: JSON.stringify(obj),
                         err: err
                     }));
                 }
-            } else if (err instanceof common.errors.NotFoundError) {
+            } else if (err instanceof errors.NotFoundError) {
                 if (this.errorConfig.showNotFoundWarning) {
                     problems.push({
                         message: 'Entry was not imported and ignored. Could not find entry.',
@@ -138,8 +145,8 @@ class Base {
                     });
                 }
             } else {
-                if (!common.errors.utils.isIgnitionError(err)) {
-                    err = new common.errors.DataImportError({
+                if (!errors.utils.isIgnitionError(err)) {
+                    err = new errors.DataImportError({
                         message: err.message,
                         context: JSON.stringify(obj),
                         help: this.modelName,
@@ -183,7 +190,7 @@ class Base {
         let userReferenceProblems = {};
 
         const handleObject = (obj, key) => {
-            if (!obj.hasOwnProperty(key)) {
+            if (!Object.prototype.hasOwnProperty.call(obj, key)) {
                 return;
             }
 
@@ -317,6 +324,7 @@ class Base {
                         // for identifier lookup
                         this.importedData.push({
                             id: importedModel.id,
+                            originalId: this.originalIdMap[importedModel.id],
                             slug: importedModel.get('slug'),
                             originalSlug: obj.slug,
                             email: importedModel.get('email')

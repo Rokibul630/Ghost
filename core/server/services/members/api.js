@@ -1,125 +1,177 @@
-const url = require('url');
 const settingsCache = require('../settings/cache');
-const config = require('../../config');
-const MembersApi = require('../../lib/members');
-const models = require('../../models');
+const MembersApi = require('@tryghost/members-api');
+const logging = require('../../../shared/logging');
 const mail = require('../mail');
+const models = require('../../models');
+const signinEmail = require('./emails/signin');
+const signupEmail = require('./emails/signup');
+const subscribeEmail = require('./emails/subscribe');
+const updateEmail = require('./emails/updateEmail');
+const SingleUseTokenProvider = require('./SingleUseTokenProvider');
+const urlUtils = require('../../../shared/url-utils');
 
-function createMember({name, email, password}) {
-    return models.Member.add({
-        name,
-        email,
-        password
-    }).then((member) => {
-        return member.toJSON();
-    });
-}
+const MAGIC_LINK_TOKEN_VALIDITY = 24 * 60 * 60 * 1000;
 
-function updateMember(member, newData) {
-    return models.Member.findOne(member, {
-        require: true
-    }).then(({id}) => {
-        return models.Member.edit(newData, {id});
-    }).then((member) => {
-        return member.toJSON();
-    });
-}
+const ghostMailer = new mail.GhostMailer();
 
-function getMember(data, options) {
-    options = options || {};
-    return models.Member.findOne(data, options).then((model) => {
-        if (!model) {
-            return null;
-        }
-        return model.toJSON(options);
-    });
-}
+module.exports = createApiInstance;
 
-function listMembers(options) {
-    return models.Member.findPage(options).then((models) => {
-        return {
-            members: models.data.map(model => model.toJSON(options)),
-            meta: models.meta
-        };
-    });
-}
+function createApiInstance(config) {
+    const membersApiInstance = MembersApi({
+        tokenConfig: config.getTokenConfig(),
+        auth: {
+            getSigninURL: config.getSigninURL.bind(config),
+            allowSelfSignup: config.getAllowSelfSignup(),
+            tokenProvider: new SingleUseTokenProvider(models.SingleUseToken, MAGIC_LINK_TOKEN_VALIDITY)
+        },
+        mail: {
+            transporter: {
+                sendMail(message) {
+                    if (process.env.NODE_ENV !== 'production') {
+                        logging.warn(message.text);
+                    }
+                    let msg = Object.assign({
+                        from: config.getAuthEmailFromAddress(),
+                        subject: 'Signin',
+                        forceTextContent: true
+                    }, message);
 
-function validateMember({email, password}) {
-    return models.Member.findOne({email}, {
-        require: true
-    }).then((member) => {
-        return member.comparePassword(password).then((res) => {
-            if (!res) {
-                throw new Error('Password is incorrect');
+                    return ghostMailer.send(msg);
+                }
+            },
+            getSubject(type) {
+                const siteTitle = settingsCache.get('title');
+                switch (type) {
+                case 'subscribe':
+                    return `📫 Confirm your subscription to ${siteTitle}`;
+                case 'signup':
+                    return `🙌 Complete your sign up to ${siteTitle}!`;
+                case 'updateEmail':
+                    return `📫 Confirm your email update for ${siteTitle}!`;
+                case 'signin':
+                default:
+                    return `🔑 Secure sign in link for ${siteTitle}`;
+                }
+            },
+            getText(url, type, email) {
+                const siteTitle = settingsCache.get('title');
+                switch (type) {
+                case 'subscribe':
+                    return `
+                        Hey there,
+
+                        You're one tap away from subscribing to ${siteTitle} — please confirm your email address with this link:
+
+                        ${url}
+
+                        For your security, the link will expire in 24 hours time.
+
+                        All the best!
+                        The team at ${siteTitle}
+
+                        ---
+
+                        Sent to ${email}
+                        If you did not make this request, you can simply delete this message. You will not be subscribed.
+                        `;
+                case 'signup':
+                    return `
+                        Hey there!
+
+                        Thanks for signing up for ${siteTitle} — use this link to complete the sign up process and be automatically signed in:
+
+                        ${url}
+
+                        For your security, the link will expire in 24 hours time.
+
+                        See you soon!
+                        The team at ${siteTitle}
+
+                        ---
+
+                        Sent to ${email}
+                        If you did not make this request, you can simply delete this message. You will not be signed up, and no account will be created for you.
+                        `;
+                case 'updateEmail':
+                    return `
+                            Hey there,
+
+                            Please confirm your email address with this link:
+
+                            ${url}
+
+                            For your security, the link will expire in 24 hours time.
+
+                            ---
+
+                            Sent to ${email}
+                            If you did not make this request, you can simply delete this message. This email address will not be used.
+                            `;
+                case 'signin':
+                default:
+                    return `
+                        Hey there,
+
+                        Welcome back! Use this link to securely sign in to your ${siteTitle} account:
+
+                        ${url}
+
+                        For your security, the link will expire in 24 hours time.
+
+                        See you soon!
+                        The team at ${siteTitle}
+
+                        ---
+
+                        Sent to ${email}
+                        If you did not make this request, you can safely ignore this email.
+                        `;
+                }
+            },
+            getHTML(url, type, email) {
+                const siteTitle = settingsCache.get('title');
+                const siteUrl = urlUtils.urlFor('home', true);
+                const domain = urlUtils.urlFor('home', true).match(new RegExp('^https?://([^/:?#]+)(?:[/:?#]|$)', 'i'));
+                const siteDomain = (domain && domain[1]);
+                const accentColor = settingsCache.get('accent_color') || '#15212A';
+                switch (type) {
+                case 'subscribe':
+                    return subscribeEmail({url, email, siteTitle, accentColor, siteDomain, siteUrl});
+                case 'signup':
+                    return signupEmail({url, email, siteTitle, accentColor, siteDomain, siteUrl});
+                case 'updateEmail':
+                    return updateEmail({url, email, siteTitle, accentColor, siteDomain, siteUrl});
+                case 'signin':
+                default:
+                    return signinEmail({url, email, siteTitle, accentColor, siteDomain, siteUrl});
+                }
             }
-            return member;
-        });
-    }).then((member) => {
-        return member.toJSON();
+        },
+        paymentConfig: {
+            stripe: config.getStripePaymentConfig()
+        },
+        models: {
+            /**
+             * Settings do not have their own models, so we wrap the webhook in a "fake" model
+             */
+            StripeWebhook: {
+                async upsert(data, options) {
+                    const settings = [{
+                        key: 'members_stripe_webhook_id',
+                        value: data.webhook_id
+                    }, {
+                        key: 'members_stripe_webhook_secret',
+                        value: data.secret
+                    }];
+                    await models.Settings.edit(settings, options);
+                }
+            },
+            StripeCustomer: models.MemberStripeCustomer,
+            StripeCustomerSubscription: models.StripeCustomerSubscription,
+            Member: models.Member
+        },
+        logger: logging
     });
+
+    return membersApiInstance;
 }
-
-// @TODO this should check some config/settings and return Promise.reject by default
-function validateAudience({audience, origin}) {
-    if (audience === origin) {
-        return Promise.resolve();
-    }
-    return Promise.resolve();
-}
-
-const publicKey = settingsCache.get('members_public_key');
-const privateKey = settingsCache.get('members_private_key');
-const sessionSecret = settingsCache.get('members_session_secret');
-const passwordResetUrl = config.get('url');
-const {protocol, host} = url.parse(config.get('url'));
-const siteOrigin = `${protocol}//${host}`;
-const issuer = siteOrigin;
-const ssoOrigin = siteOrigin;
-let mailer;
-
-function sendEmail(member, {token}) {
-    if (!(mailer instanceof mail.GhostMailer)) {
-        mailer = new mail.GhostMailer();
-    }
-    const message = {
-        to: member.email,
-        subject: 'Reset password',
-        html: `
-        Hi ${member.name},
-
-        To reset your password, click the following link and follow the instructions:
-
-        ${passwordResetUrl}#reset-password?token=${token}
-
-        If you didn't request a password change, just ignore this email.
-        `
-    };
-
-    /* eslint-disable */
-    // @TODO remove this
-    console.log(message.html);
-    /* eslint-enable */
-    return mailer.send(message).catch((err) => {
-        return Promise.reject(err);
-    });
-}
-
-const api = MembersApi({
-    config: {
-        issuer,
-        publicKey,
-        privateKey,
-        sessionSecret,
-        ssoOrigin
-    },
-    validateAudience,
-    createMember,
-    getMember,
-    listMembers,
-    validateMember,
-    updateMember,
-    sendEmail
-});
-
-module.exports = api;
-module.exports.publicKey = publicKey;

@@ -1,6 +1,8 @@
-const common = require('../../../../lib/common');
+const errors = require('@tryghost/errors');
+const {i18n} = require('../../../../lib/common');
 const auth = require('../../../../services/auth');
 const shared = require('../../../shared');
+const apiMw = require('../../middleware');
 
 const notImplemented = function (req, res, next) {
     // CASE: user is logged in, allow
@@ -9,16 +11,19 @@ const notImplemented = function (req, res, next) {
     }
 
     // @NOTE: integrations have limited access for now
-    const whitelisted = {
-        // @NOTE: stable
+    //        all APIs are considered to be in "maintenance" stability index
+    const allowlisted = {
+        site: ['GET'],
         posts: ['GET', 'PUT', 'DELETE', 'POST'],
-        tags: ['GET', 'PUT', 'DELETE', 'POST'],
+        pages: ['GET', 'PUT', 'DELETE', 'POST'],
         images: ['POST'],
-        // @NOTE: experimental
+        webhooks: ['POST', 'PUT', 'DELETE'],
+        tags: ['GET', 'PUT', 'DELETE', 'POST'],
         users: ['GET'],
-        themes: ['POST'],
-        subscribers: ['GET', 'PUT', 'DELETE', 'POST'],
-        configuration: ['GET']
+        themes: ['POST', 'PUT'],
+        config: ['GET'],
+        schedules: ['PUT'],
+        db: ['POST']
     };
 
     const match = req.url.match(/^\/(\w+)\/?/);
@@ -26,14 +31,14 @@ const notImplemented = function (req, res, next) {
     if (match) {
         const entity = match[1];
 
-        if (whitelisted[entity] && whitelisted[entity].includes(req.method)) {
+        if (allowlisted[entity] && allowlisted[entity].includes(req.method)) {
             return next();
         }
     }
 
-    next(new common.errors.GhostError({
+    next(new errors.GhostError({
         errorType: 'NotImplementedError',
-        message: common.i18n.t('errors.api.common.notImplemented'),
+        message: i18n.t('errors.api.common.notImplemented'),
         statusCode: '501'
     }));
 };
@@ -44,23 +49,33 @@ const notImplemented = function (req, res, next) {
 module.exports.authAdminApi = [
     auth.authenticate.authenticateAdminApi,
     auth.authorize.authorizeAdminApi,
-    shared.middlewares.updateUserLastSeen,
-    shared.middlewares.api.cors,
-    shared.middlewares.urlRedirects.adminRedirect,
+    apiMw.updateUserLastSeen,
+    apiMw.cors,
+    shared.middlewares.urlRedirects.adminSSLAndHostRedirect,
     shared.middlewares.prettyUrls,
     notImplemented
 ];
 
 /**
- * Authentication for client endpoints
+ * Authentication for private endpoints with token in URL
+ * Ex.: For scheduler publish endpoint
  */
-module.exports.authenticateClient = function authenticateClient(client) {
-    return [
-        auth.authenticate.authenticateClient,
-        auth.authenticate.authenticateUser,
-        auth.authorize.requiresAuthorizedClient(client),
-        shared.middlewares.api.cors,
-        shared.middlewares.urlRedirects.adminRedirect,
-        shared.middlewares.prettyUrls
-    ];
-};
+module.exports.authAdminApiWithUrl = [
+    auth.authenticate.authenticateAdminApiWithUrl,
+    auth.authorize.authorizeAdminApi,
+    apiMw.updateUserLastSeen,
+    apiMw.cors,
+    shared.middlewares.urlRedirects.adminSSLAndHostRedirect,
+    shared.middlewares.prettyUrls,
+    notImplemented
+];
+
+/**
+ * Middleware for public admin endpoints
+ */
+module.exports.publicAdminApi = [
+    apiMw.cors,
+    shared.middlewares.urlRedirects.adminSSLAndHostRedirect,
+    shared.middlewares.prettyUrls,
+    notImplemented
+];

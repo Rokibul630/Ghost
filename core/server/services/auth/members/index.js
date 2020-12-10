@@ -1,7 +1,7 @@
 const jwt = require('express-jwt');
 const membersService = require('../../members');
 const labs = require('../../labs');
-const config = require('../../../config');
+const config = require('../../../../shared/config');
 
 let UNO_MEMBERINO;
 
@@ -18,13 +18,17 @@ module.exports = {
             const {protocol, host} = url.parse(config.get('url'));
             const siteOrigin = `${protocol}//${host}`;
 
-            UNO_MEMBERINO = jwt({
+            UNO_MEMBERINO = membersService.api.getPublicConfig().then(({issuer}) => jwt({
                 credentialsRequired: false,
                 requestProperty: 'member',
                 audience: siteOrigin,
-                issuer: siteOrigin,
-                algorithm: 'RS512',
-                secret: membersService.api.publicKey,
+                issuer,
+                algorithms: ['RS512'],
+                secret(req, payload, done) {
+                    membersService.api.getPublicConfig().then(({publicKey}) => {
+                        done(null, publicKey);
+                    }).catch(done);
+                },
                 getToken(req) {
                     if (!req.get('authorization')) {
                         return null;
@@ -38,8 +42,10 @@ module.exports = {
 
                     return credentials;
                 }
-            });
+            }));
         }
-        return UNO_MEMBERINO;
+        return function (req, res, next) {
+            UNO_MEMBERINO.then(fn => fn(req, res, next)).catch(next);
+        };
     }
 };

@@ -10,6 +10,17 @@ const Integration = ghostBookshelf.Model.extend({
         webhooks: 'webhooks'
     },
 
+    defaults() {
+        return {
+            type: 'custom'
+        };
+    },
+
+    emitChange: function emitChange(event, options) {
+        const eventToTrigger = 'integration' + '.' + event;
+        ghostBookshelf.Model.prototype.emitChange.bind(this)(this, eventToTrigger, options);
+    },
+
     add(data, options) {
         const addIntegration = () => {
             return ghostBookshelf.Model.add.call(this, data, options)
@@ -48,7 +59,9 @@ const Integration = ghostBookshelf.Model.extend({
         return editIntegration();
     },
 
-    onSaving(newIntegration, attr, options) {
+    onSaving(integration, attrs, options) {
+        ghostBookshelf.Model.prototype.onSaving.apply(this, arguments);
+
         if (this.hasChanged('slug') || !this.get('slug')) {
             // Pass the new slug through the generator to strip illegal characters, detect duplicates
             return ghostBookshelf.Model.generateSlug(Integration, this.get('slug') || this.get('name'),
@@ -57,6 +70,12 @@ const Integration = ghostBookshelf.Model.extend({
                     this.set({slug});
                 });
         }
+    },
+
+    onCreated: function onCreated(model, response, options) {
+        ghostBookshelf.Model.prototype.onCreated.apply(this, arguments);
+
+        model.emitChange('added', options);
     },
 
     permittedAttributes(...args) {
@@ -69,6 +88,16 @@ const Integration = ghostBookshelf.Model.extend({
 
     webhooks: function webhooks() {
         return this.hasMany('Webhook', 'integration_id');
+    }
+}, {
+    permittedOptions(methodName) {
+        let options = ghostBookshelf.Model.permittedOptions.call(this, methodName);
+
+        if (methodName === 'findOne') {
+            options = options.concat(['filter']);
+        }
+
+        return options;
     }
 });
 

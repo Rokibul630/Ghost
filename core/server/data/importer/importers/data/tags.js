@@ -1,8 +1,8 @@
-const debug = require('ghost-ignition').debug('importer:tags'),
-    Promise = require('bluebird'),
-    _ = require('lodash'),
-    BaseImporter = require('./base'),
-    models = require('../../../../models');
+const debug = require('ghost-ignition').debug('importer:tags');
+const Promise = require('bluebird');
+const _ = require('lodash');
+const BaseImporter = require('./base');
+const models = require('../../../../models');
 
 class TagsImporter extends BaseImporter {
     constructor(allDataFromFile) {
@@ -58,6 +58,7 @@ class TagsImporter extends BaseImporter {
                             // for identifier lookup
                             this.importedData.push({
                                 id: importedModel.id,
+                                originalId: this.originalIdMap[importedModel.id],
                                 slug: importedModel.get('slug'),
                                 originalSlug: obj.slug
                             });

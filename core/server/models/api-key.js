@@ -1,3 +1,7 @@
+const omit = require('lodash/omit');
+const logging = require('../../shared/logging');
+const errors = require('@tryghost/errors');
+const _ = require('lodash');
 const crypto = require('crypto');
 const ghostBookshelf = require('./base');
 const {Role} = require('./role');
@@ -25,6 +29,50 @@ const createSecret = (type) => {
     return crypto.randomBytes(bytes).toString('hex');
 };
 
+const addAction = (model, event, options) => {
+    if (!model.wasChanged()) {
+        return;
+    }
+
+    // CASE: model does not support actions at all
+    if (!model.getAction) {
+        return;
+    }
+
+    const existingAction = model.getAction(event, options);
+
+    // CASE: model does not support action for target event
+    if (!existingAction) {
+        return;
+    }
+
+    const insert = (action) => {
+        ghostBookshelf.model('Action')
+            .add(action)
+            .catch((err) => {
+                if (_.isArray(err)) {
+                    err = err[0];
+                }
+
+                logging.error(new errors.InternalServerError({
+                    err
+                }));
+            });
+    };
+
+    if (options.transacting) {
+        options.transacting.once('committed', (committed) => {
+            if (!committed) {
+                return;
+            }
+
+            insert(existingAction);
+        });
+    } else {
+        insert(existingAction);
+    }
+};
+
 const ApiKey = ghostBookshelf.Model.extend({
     tableName: 'api_keys',
 
@@ -40,11 +88,16 @@ const ApiKey = ghostBookshelf.Model.extend({
         return this.belongsTo('Role');
     },
 
-    // if an ApiKey does not have a related Integration then it's considered
-    // "internal" and shouldn't show up in the UI. Example internal API Keys
-    // would be the ones used for the scheduler and backup clients
     integration() {
         return this.belongsTo('Integration');
+    },
+
+    user() {
+        return this.belongsTo('User');
+    },
+
+    format(attrs) {
+        return omit(attrs, 'role');
     },
 
     onSaving(model, attrs, options) {
@@ -55,7 +108,7 @@ const ApiKey = ghostBookshelf.Model.extend({
         // - content key = no role
         if (this.hasChanged('type') || this.hasChanged('role_id')) {
             if (this.get('type') === 'admin') {
-                return Role.findOne({name: 'Admin Integration'}, Object.assign({}, options, {columns: ['id']}))
+                return Role.findOne({name: attrs.role || 'Admin Integration'}, Object.assign({}, options, {columns: ['id']}))
                     .then((role) => {
                         this.set('role_id', role.get('id'));
                     });
@@ -65,6 +118,29 @@ const ApiKey = ghostBookshelf.Model.extend({
                 this.set('role_id', null);
             }
         }
+    },
+    onUpdated(model, attrs, options) {
+        if (this.previous('secret') !== this.get('secret')) {
+            addAction(model, 'refreshed', options);
+        }
+    },
+
+    getAction(event, options) {
+        const actor = this.getActor(options);
+
+        // @NOTE: we ignore internal updates (`options.context.internal`) for now
+        if (!actor) {
+            return;
+        }
+
+        // @TODO: implement context
+        return {
+            event: event,
+            resource_id: this.id || this.previous('id'),
+            resource_type: 'api_key',
+            actor_id: actor.id,
+            actor_type: actor.type
+        };
     }
 }, {
     refreshSecret(data, options) {
